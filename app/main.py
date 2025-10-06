@@ -952,39 +952,19 @@ def batch_analyze():
 def build_knowledge_graph():
     """Build knowledge graph from papers"""
     try:
-        # Check if specific paper IDs are provided
-        paper_ids_param = request.args.get('paper_ids', default='', type=str)
-        max_papers = request.args.get('max_papers', default=20, type=int)
+        max_papers = request.args.get('max_papers', default=30, type=int)
         
         df = pd.read_csv(CSV_FILE)
-        
-        # Determine which papers to process
-        if paper_ids_param:
-            # Parse paper IDs
-            try:
-                paper_ids = [int(id.strip()) for id in paper_ids_param.split(',') if id.strip()]
-                paper_ids = [id for id in paper_ids if 1 <= id <= len(df)]  # Validate IDs
-                
-                if not paper_ids:
-                    return jsonify({"error": "No valid paper IDs provided", "status": "error"}), 400
-                
-                # Get specific papers by ID
-                df_sample = df.iloc[[id - 1 for id in paper_ids]]
-                print(f"Building knowledge graph from {len(paper_ids)} specific papers: {paper_ids}")
-            except ValueError:
-                return jsonify({"error": "Invalid paper IDs format. Use comma-separated numbers.", "status": "error"}), 400
-        else:
-            # Use first N papers
-            df_sample = df.head(max_papers)
-            print(f"Building knowledge graph from first {len(df_sample)} papers...")
+        df_sample = df.head(max_papers)
         
         nodes = []
         edges = []
         node_id_map = {}
         node_counter = 0
         
-        for idx, row in df_sample.iterrows():
-            original_index = idx + 1  # Store the original paper ID
+        print(f"Building knowledge graph from {len(df_sample)} papers...")
+        
+        for i, row in df_sample.iterrows():
             title = row.get("Title", "")
             link = row.get("Link", "")
             
@@ -998,24 +978,23 @@ def build_knowledge_graph():
             entities = extract_entities(combined_text)
             
             # Create paper node
-            paper_id = f"paper_{original_index}"
+            paper_id = f"paper_{i}"
             node_id_map[paper_id] = node_counter
             nodes.append({
                 "id": node_counter,
-                "label": f"Paper {original_index}",
+                "label": title[:50] + "..." if len(title) > 50 else title,
                 "type": "paper",
-                "paper_id": original_index,
                 "full_title": title,
                 "year": meta["year"],
                 "authors": meta["authors"],
                 "link": link,
-                "size": 10
+                "size": 8
             })
             paper_node_id = node_counter
             node_counter += 1
             
             # Add concept nodes from keywords
-            for keyword in keywords[:5]:
+            for keyword in keywords[:5]:  # Limit keywords
                 concept_key = f"concept_{keyword.lower()}"
                 if concept_key not in node_id_map:
                     node_id_map[concept_key] = node_counter
@@ -1023,15 +1002,15 @@ def build_knowledge_graph():
                         "id": node_counter,
                         "label": keyword,
                         "type": "concept",
-                        "size": 6
+                        "size": 5
                     })
                     node_counter += 1
                 
+                # Create edge: Paper -> studies -> Concept
                 edges.append({
                     "source": paper_node_id,
                     "target": node_id_map[concept_key],
-                    "label": "studies",
-                    "strength": 2
+                    "label": "studies"
                 })
             
             # Add organism nodes
@@ -1043,15 +1022,15 @@ def build_knowledge_graph():
                         "id": node_counter,
                         "label": organism,
                         "type": "organism",
-                        "size": 7
+                        "size": 6
                     })
                     node_counter += 1
                 
+                # Create edge: Paper -> uses organism -> Organism
                 edges.append({
                     "source": paper_node_id,
                     "target": node_id_map[org_key],
-                    "label": "uses_organism",
-                    "strength": 2
+                    "label": "uses_organism"
                 })
             
             # Add condition nodes
@@ -1063,15 +1042,15 @@ def build_knowledge_graph():
                         "id": node_counter,
                         "label": condition,
                         "type": "condition",
-                        "size": 7
+                        "size": 6
                     })
                     node_counter += 1
                 
+                # Create edge: Paper -> studies -> Condition
                 edges.append({
                     "source": paper_node_id,
                     "target": node_id_map[cond_key],
-                    "label": "studies",
-                    "strength": 2
+                    "label": "studies"
                 })
             
             # Add outcome nodes
@@ -1083,20 +1062,21 @@ def build_knowledge_graph():
                         "id": node_counter,
                         "label": outcome,
                         "type": "outcome",
-                        "size": 6
+                        "size": 5
                     })
                     node_counter += 1
                 
+                # Create edge: Paper -> observes -> Outcome
                 edges.append({
                     "source": paper_node_id,
                     "target": node_id_map[out_key],
-                    "label": "observes",
-                    "strength": 2
+                    "label": "observes"
                 })
             
             time.sleep(0.3)
         
-        # Create concept-to-concept edges
+        # Create concept-to-concept edges (co-occurrence)
+        # Find concepts that appear in multiple papers
         concept_papers = {}
         for edge in edges:
             target_node = next((n for n in nodes if n["id"] == edge["target"]), None)
@@ -1106,16 +1086,16 @@ def build_knowledge_graph():
                     concept_papers[concept_id] = []
                 concept_papers[concept_id].append(edge["source"])
         
+        # Connect concepts that co-occur in papers
         concept_ids = list(concept_papers.keys())
         for i, c1 in enumerate(concept_ids):
             for c2 in concept_ids[i+1:]:
                 shared_papers = set(concept_papers[c1]) & set(concept_papers[c2])
-                if len(shared_papers) >= 2:
+                if len(shared_papers) >= 2:  # At least 2 papers in common
                     edges.append({
                         "source": c1,
                         "target": c2,
-                        "label": "co_occurs",
-                        "strength": 1
+                        "label": "co_occurs"
                     })
         
         return jsonify({
@@ -1135,8 +1115,6 @@ def build_knowledge_graph():
         
     except Exception as e:
         print(f"Error building knowledge graph: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": str(e), "status": "error"}), 500
 
 @app.route("/")
@@ -1704,37 +1682,6 @@ def index():
                     <div class="graph-info" id="nodeInfo" style="display: none;">
                         <strong id="nodeInfoTitle"></strong>
                         <div id="nodeInfoContent" style="margin-top: 10px; font-size: 12px;"></div>
-                    </div>
-                </div>
-                <div style="background: var(--bg-secondary); padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px var(--shadow); margin-bottom: 20px;">
-                    <h3 style="margin-bottom: 15px; color: var(--text-primary);">📋 Graph Configuration</h3>
-                    
-                    <div style="display: flex; flex-direction: column; gap: 15px;">
-                        <!-- Option 1: Build from first N papers -->
-                        <div style="border: 2px solid var(--border-color); padding: 15px; border-radius: 8px;">
-                            <label style="display: block; margin-bottom: 10px; font-weight: bold;">Option 1: Build from First N Papers</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="number" id="kgPaperCount" value="20" min="5" max="100" 
-                                    style="width: 100px; padding: 10px; border: 2px solid var(--border-color); border-radius: 5px; background: var(--bg-tertiary); color: var(--text-primary);">
-                                <span style="color: var(--text-secondary);">papers from the dataset</span>
-                                <button onclick="buildKnowledgeGraph('count')" id="buildKGBtn1" style="margin-left: auto;">🔨 BUILD</button>
-                            </div>
-                        </div>
-                        
-                        <!-- Option 2: Build from specific paper IDs -->
-                        <div style="border: 2px solid var(--border-color); padding: 15px; border-radius: 8px;">
-                            <label style="display: block; margin-bottom: 10px; font-weight: bold;">Option 2: Build from Specific Paper IDs</label>
-                            <div style="display: flex; flex-direction: column; gap: 10px;">
-                                <textarea id="kgPaperIds" placeholder="Enter paper IDs separated by commas (e.g., 1, 5, 12, 23, 45)" 
-                                    style="width: 100%; min-height: 60px; padding: 10px; border: 2px solid var(--border-color); border-radius: 5px; background: var(--bg-tertiary); color: var(--text-primary); font-family: inherit; resize: vertical;"></textarea>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <span style="color: var(--text-secondary); font-size: 12px;">Example: 1,5,10,15,20 or 1, 5, 10, 15, 20</span>
-                                    <button onclick="buildKnowledgeGraph('ids')" id="buildKGBtn2" style="margin-left: auto;">🔨 BUILD</button>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <button onclick="resetKnowledgeGraph()" style="background: #dc3545; width: 150px;">🔄 RESET GRAPH</button>
                     </div>
                 </div>
             </div>
@@ -2507,34 +2454,19 @@ def index():
                 }
             }
 
-            async function buildKnowledgeGraph(mode) {
+            async function buildKnowledgeGraph() {
+                const maxPapers = document.getElementById('kgPaperCount').value;
                 const loading = document.getElementById('kgLoading');
                 const error = document.getElementById('kgError');
-                const btn1 = document.getElementById('buildKGBtn1');
-                const btn2 = document.getElementById('buildKGBtn2');
+                const btn = document.getElementById('buildKGBtn');
                 
                 loading.style.display = 'block';
                 error.style.display = 'none';
-                btn1.disabled = true;
-                btn2.disabled = true;
-                btn1.textContent = '⏳ Building...';
-                btn2.textContent = '⏳ Building...';
+                btn.disabled = true;
+                btn.textContent = '⏳ Building...';
                 
                 try {
-                    let url = '/api/knowledge-graph';
-                    
-                    if (mode === 'count') {
-                        const maxPapers = document.getElementById('kgPaperCount').value;
-                        url += `?max_papers=${maxPapers}`;
-                    } else if (mode === 'ids') {
-                        const paperIds = document.getElementById('kgPaperIds').value.trim();
-                        if (!paperIds) {
-                            throw new Error('Please enter paper IDs');
-                        }
-                        url += `?paper_ids=${encodeURIComponent(paperIds)}`;
-                    }
-                    
-                    const response = await fetch(url);
+                    const response = await fetch(`/api/knowledge-graph?max_papers=${maxPapers}`);
                     const data = await response.json();
                     
                     if (data.status === 'success') {
@@ -2549,22 +2481,18 @@ def index():
                     error.style.display = 'block';
                 } finally {
                     loading.style.display = 'none';
-                    btn1.disabled = false;
-                    btn2.disabled = false;
-                    btn1.textContent = '🔨 BUILD';
-                    btn2.textContent = '🔨 BUILD';
+                    btn.disabled = false;
+                    btn.textContent = '🔨 BUILD GRAPH';
                 }
             }
-            function updateKGStats(stats) {
-                console.log('KG stats:', stats);
-                // Optionally, update some HTML elements to show stats
-            }
+
             function initializeGraph(data) {
                 const container = document.getElementById('graphContainer');
                 
                 // Clear existing graph
                 if (graph3D) {
                     container.innerHTML = '';
+                    // Re-add controls and legend
                     container.innerHTML = `
                         <div class="graph-controls">
                             <button onclick="centerGraph()" title="Center View">🎯 Center</button>
@@ -2586,6 +2514,7 @@ def index():
                     `;
                 }
                 
+                // Color mapping
                 const colorMap = {
                     'paper': '#ff6b6b',
                     'concept': '#4ecdc4',
@@ -2594,58 +2523,34 @@ def index():
                     'outcome': '#aa96da'
                 };
                 
-                const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-                
                 // Initialize 3D Force Graph
                 graph3D = ForceGraph3D()(container)
-                .graphData({ nodes: data.nodes, links: data.edges })
-                .nodeLabel(node => `<div style="background: rgba(0,0,0,0.8); color: white; padding: 8px; border-radius: 4px; font-size: 12px;">${node.label}</div>`)
-                .nodeColor(node => colorMap[node.type] || '#999')
-                .nodeVal(node => node.size || 5)
-                .nodeOpacity(0.9)
-                .linkLabel(link => link.label)
-                .linkColor(() => isDark ? 'rgba(200, 200, 200, 0.4)' : 'rgba(100, 100, 100, 0.4)')
-                .linkWidth(link => (link.strength || 1) * 2.5)
-                .linkOpacity(0.6)
-                .linkDirectionalParticles(3)
-                .linkDirectionalParticleWidth(3)
-                .linkDirectionalParticleSpeed(0.005)
-                .onNodeClick(node => showNodeInfo(node))
-                .onNodeHover(node => {
-                    container.style.cursor = node ? 'pointer' : 'default';
-                })
-                .backgroundColor(isDark ? '#2d2d2d' : '#ffffff')
-                .enableNodeDrag(true)
-                .enableNavigationControls(true);
-
-                // ✅ Set forces separately after graph initialization
-                graph3D.d3Force('charge').strength(-300);  // Repulsion force
-                graph3D.d3Force('link').distance(100);     // Link length
-
-                // Center the graph immediately after initialization
-                setTimeout(() => {
-                    graph3D.zoomToFit(400, 100);
-                    graph3D.centerAt(0, 0, 1000);
-                }, 500);
+                    .graphData({ nodes: data.nodes, links: data.edges })
+                    .nodeLabel(node => node.label)
+                    .nodeColor(node => colorMap[node.type] || '#999')
+                    .nodeVal(node => node.size || 5)
+                    .linkLabel(link => link.label)
+                    .linkColor(() => 'rgba(150, 150, 150, 0.3)')
+                    .linkWidth(1)
+                    .linkDirectionalParticles(2)
+                    .linkDirectionalParticleWidth(2)
+                    .onNodeClick(node => showNodeInfo(node))
+                    .onNodeHover(node => {
+                        container.style.cursor = node ? 'pointer' : 'default';
+                    })
+                    .backgroundColor(document.documentElement.getAttribute('data-theme') === 'dark' ? '#2d2d2d' : '#ffffff');
                 
-                // Gentle auto-rotate (slower)
+                // Auto-rotate
                 let angle = 0;
-                const rotationInterval = setInterval(() => {
-                    if (physicsRunning && graph3D) {
-                        const distance = 800;
+                setInterval(() => {
+                    if (physicsRunning) {
                         graph3D.cameraPosition({
-                            x: distance * Math.sin(angle),
-                            z: distance * Math.cos(angle)
+                            x: 1000 * Math.sin(angle),
+                            z: 1000 * Math.cos(angle)
                         });
-                        angle += Math.PI / 1000;  // Slower rotation
+                        angle += Math.PI / 500;
                     }
                 }, 50);
-                
-                // Store interval ID for cleanup
-                if (window.graphRotationInterval) {
-                    clearInterval(window.graphRotationInterval);
-                }
-                window.graphRotationInterval = rotationInterval;
             }
 
             function showNodeInfo(node) {
@@ -2655,22 +2560,14 @@ def index():
                 
                 titleEl.textContent = node.label;
                 
-                let content = `<div><strong>Type:</strong> ${node.type.charAt(0).toUpperCase() + node.type.slice(1)}</div>`;
-                content += `<div style="margin-top: 5px;"><strong>Node ID:</strong> ${node.id}</div>`;
+                let content = `<div><strong>Type:</strong> ${node.type}</div>`;
                 
                 if (node.type === 'paper') {
                     content += `
-                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
-                            <div><strong>Paper ID:</strong> #${node.paper_id}</div>
-                            <div style="margin-top: 5px;"><strong>Title:</strong> ${node.full_title}</div>
-                            <div style="margin-top: 5px;"><strong>Year:</strong> ${node.year}</div>
-                            <div style="margin-top: 5px;"><strong>Authors:</strong> ${node.authors}</div>
-                            <div style="margin-top: 10px;">
-                                <a href="${node.link}" target="_blank" style="color: #007bff; text-decoration: none; font-weight: bold;">📄 View Full Paper →</a>
-                            </div>
-                            <div style="margin-top: 5px;">
-                                <a href="#" onclick="viewPaperDetails(${node.paper_id}); return false;" style="color: #28a745; text-decoration: none; font-weight: bold;">🔍 View Details in Modal →</a>
-                            </div>
+                        <div style="margin-top: 5px;"><strong>Year:</strong> ${node.year}</div>
+                        <div style="margin-top: 5px;"><strong>Authors:</strong> ${node.authors}</div>
+                        <div style="margin-top: 5px;">
+                            <a href="${node.link}" target="_blank" style="color: #007bff;">View Paper →</a>
                         </div>
                     `;
                 }
@@ -2679,10 +2576,16 @@ def index():
                 infoBox.style.display = 'block';
             }
 
+            function updateKGStats(stats) {
+                document.getElementById('kgNodeCount').textContent = stats.total_nodes;
+                document.getElementById('kgEdgeCount').textContent = stats.total_edges;
+                document.getElementById('kgPaperCount').textContent = stats.papers;
+                document.getElementById('kgConceptCount').textContent = stats.concepts;
+            }
+
             function centerGraph() {
                 if (graph3D) {
-                    graph3D.zoomToFit(1000, 100);
-                    graph3D.centerAt(0, 0, 1000);
+                    graph3D.zoomToFit(1000);
                 }
             }
 
@@ -2718,18 +2621,12 @@ def index():
                             <div class="legend-item"><div class="legend-color" style="background: #aa96da;"></div><span>Outcome</span></div>
                         </div>
                     `;
-                    
-                    if (window.graphRotationInterval) {
-                        clearInterval(window.graphRotationInterval);
-                    }
-                    
                     graph3D = null;
                     graphData = null;
                     document.getElementById('kgNodeCount').textContent = '0';
                     document.getElementById('kgEdgeCount').textContent = '0';
                     document.getElementById('kgPaperCount').textContent = '0';
                     document.getElementById('kgConceptCount').textContent = '0';
-                    document.getElementById('nodeInfo').style.display = 'none';
                 }
             }
 
@@ -2770,3 +2667,7 @@ if __name__ == "__main__":
     print("Starting Research Papers Viewer...")
     print("Access the application at: http://localhost:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+
+
+
