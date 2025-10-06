@@ -2,7 +2,7 @@
 FROM python:3.12-slim
 
 # Set working directory
-WORKDIR /app
+WORKDIR /
 
 # Copy dependencies first
 COPY requirements.txt .
@@ -17,4 +17,5 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Run your app
-CMD ["python", "main.py"]
+CMD ["python", "app.py"]
+
